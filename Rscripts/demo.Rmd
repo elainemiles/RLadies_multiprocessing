@@ -1,0 +1,551 @@
+---
+title: "Multiprocessing Demo"
+output: html_notebook
+---
+
+# Aim
+
+This is notebook to show how to:
+
+* Make some demo sensor data with bias and sensitivity drift
+* How to make some simple plots of this data
+* How to fit a linear line
+* How to fit a linear line to multiple sensors using:
+    * for loops
+    * dplyr and broom
+    * foreach and parallel
+* How to do a rolling linear fit to multiple sensors
+
+# Create the data
+
+In this demo we will be looking at a sensor that is experiencing different kinds of errors.
+
+A sensor fresh out of the box, or over time, can start to misbehave.
+
+* Bias - Sensor is constantly reading higher or lower than it should be
+* Sensitivity - Sensor over or under-reads a value
+
+In this demo we are going to construct a simple data-frame `df` that has the following columns
+
+* `date` - Date an observation occurs and is measured by a sensor
+* `truth` - The truth
+* `y_bias` - Reading from a sensor with a nice simple bias issue
+* `y_sensitivity ` - Reading from a sensor with a nice simple sensitivity issue
+* `y_both` - Reading from a sensor with a nice simple bias and sensitivity issue
+* `y_vary` - Reading from a sensor with a nice Simple bias but complex sensitivity issue (gets more sensitive over time)
+
+```{r Make Data, fig.height=8, fig.width=16}
+make_data <- function(n=100) {
+  t <- seq(n)
+  d <- ISOdate(2018,1,1) + hours(t)
+  truth <- sin(t * 2 * pi / 24) # 1 signal per day
+  m <- 3
+  c <- 2
+  y_bias <- truth + c # Nice simple bias : truth = y_bias - 2
+  y_sensitivity <- m * truth # Nice simple sensitivity  : truth = y_bias / 3
+  y_both <- m * truth + c # Nice simple bias and sensitivity  : truth = (y_bias - 2) / 3
+  y_vary <- t/24. * truth + c # Simple bias but sensitivity changing over time  : truth = (y_bias - 2) * 24 / t
+  df <- data.frame("date" = d,
+                   "hour" = t, 
+                   "truth" = truth, 
+                   "y_bias" = y_bias, 
+                   "y_sensitivity" = y_sensitivity, 
+                   "y_both" = y_both,
+                   "y_vary" = y_vary)
+  df
+}
+
+make_ndata <- function(n=100, num=1000) {
+  t <- seq(n)
+  d <- ISOdate(2018,1,1) + hours(t)
+  truth <- sin(t * 2 * pi / 24) # 1 signal per day
+
+  df <- data.frame("date" = d,
+                   "hour" = t, 
+                   "truth" = truth)
+  set.seed(100)
+  m100 <- rnorm(num)
+  c100 <- rnorm(num)
+  for (i in seq(num)) {
+    cname <- sprintf("SENSOR.%d", i)
+    df <- df %>%
+      mutate(!!(cname) := m100[i] * truth + c100[i] )
+  }
+  df
+}
+
+df <- make_data(n = 1000)
+df_big <- make_data(n = 1000000)
+num <- 50
+df_n <- make_ndata(n = 1000, num = num)
+sensor_name <- gsub("^", "SENSOR.", seq(num))
+y_type <- c("y_bias", "y_sensitivity", "y_both", "y_vary")
+t_name <- c("slope", "intercept")
+
+df %>% 
+  ggplot(aes(x = date, y = truth)) +
+  geom_line() +
+  xlab(NULL) +
+  ylab("Signal (units)") +
+  labs(title = "Observed Truth")
+```
+
+## Plot the data
+```{r Plot Data, fig.height=8, fig.width=8}
+df %>% 
+  gather(s, val, truth, y_bias, y_sensitivity, y_both, y_vary) %>%
+  ggplot(aes(x = date, y = val, color = s)) +
+  geom_line() +
+  facet_grid(s ~ ., scales = "free") +
+  xlab(NULL) +
+  ylab("Signal (units)") +
+  labs(title = "Time series plot") +
+  theme(legend.position = "none")
+
+
+df %>% 
+  gather(s, val, y_bias, y_sensitivity, y_both, y_vary) %>%
+  ggplot(aes(x = truth, y = val, color = s)) +
+  geom_point() +
+  stat_smooth(method = "lm", col = "red") +
+  facet_wrap(s ~ ., scales = "free") + 
+  geom_abline() +
+  xlab("Truth") +
+  ylab("Signal (units)") +
+  labs(title = "Scatter plot") +
+  theme(legend.position = "none")
+```
+
+# How to find the m and c value when fitting data?
+
+* To create a model 
+    * Functional model.  In our case we are using a linear model so `lm`
+    * A formula of the form `observation ~ sensor`
+    * Some data! `df`
+    
+* To explore the model
+    * `summary`
+    * `coef`
+    * `print`
+    
+```{r Linear Model Demo, fig.height=8, fig.width=8}
+# Make the model
+f <- as.formula("truth ~ y_bias")
+model <- lm(f, df)
+
+# Explore the model
+summary(model)
+coef(model)
+print(model)
+
+# Use the model
+intercept <- model$coefficients[1]
+slope <- model$coefficients[2]
+
+result <- sprintf("Formula is truth = y_bias * %.2f + %.2f", slope, intercept)
+print(result)
+# Recall
+# y_bias = truth + 2
+# So
+# truth = y_bias - 2
+
+df %>% 
+  mutate(new_truth = y_bias * slope + intercept) %>%
+  gather(s, val, y_bias, new_truth) %>%
+  ggplot(aes(x = truth, y = val, c = s)) +
+  geom_point() +
+  stat_smooth(method = "lm") +
+  geom_abline() +
+  coord_equal() +
+  xlab("Truth") +
+  ylab("Signal (units)") +
+  xlim(-3 , 3) + ylim(-3 , 3) +
+  labs(title = sprintf("new_truth = y_bias * %.2f + %.2f", slope, intercept)) +
+  theme(legend.position = "none")
+```
+
+# How to run on many sensors?
+
+## For loop
+```{r for loop}
+for (yname in y_type) {
+  f <- as.formula(sprintf("truth ~ %s", yname))
+  model <- lm(f, df)
+  intercept <- model$coefficients[1]
+  slope <- model$coefficients[2]
+  message(sprintf("Formula is truth = %.2f(%s + %.2f)", slope, yname, intercept))
+}
+```
+
+## dplyr and broom
+```{r dplyr}
+df %>% 
+  gather(sensor, val, y_type) %>%
+  group_by(sensor) %>% 
+  nest() %>% 
+  mutate(model = map(data, ~lm(truth ~ val, data = .x) %>% 
+                       tidy)) %>% 
+  unnest(model) %>%
+  select(sensor, term, estimate) %>%
+  spread(term, estimate)
+```
+
+## Using multiprocessing
+
+When you are using multiple processors you need to do a bit of setup.
+
+* How many processors/cores do you have
+* What kind of process will you run
+* Make a cluster
+* Register them
+* What variables should all clusters know about?
+* Where should error messages go? What libraries should be loaded?
+* What happens when you close R?
+* Do the work!
+* Shut it down
+
+### Toy model
+```{r}
+# Get the number of cores available
+numCores <- detectCores() 
+
+# What kind of process?
+# (PSOCK and FORK (not available on windows!) are other options)
+sock <- "PSOCK" 
+
+# Make a cluser and register it
+myCluster <- makeCluster(numCores, type = sock, rscript_args = "--vanilla")
+registerDoParallel(myCluster)
+
+# What variables should each cluster know about?
+test_export <- "I'm here"
+clusterExport(myCluster, "test_export")
+
+# Where do my errors go?  What do I want to setup?
+tmp <- clusterEvalQ(myCluster, {sink(paste0("../logs/log.toy.", sys.parent(), ".", Sys.getpid(),".txt"));
+  library(tidyverse)})
+
+# What to do if program stopes
+on.exit(stopCluster(myCluster))
+
+# How to combine all the end results
+mycombinefunc <- function(a,b){a + b}
+
+test_mp <- foreach(yname = y_type,
+                   .combine = "mycombinefunc") %dopar% {
+                     logging::loginfo(sprintf("Working hard on %s", yname))
+                     Sys.sleep(1)
+                     print(yname)
+                     print(test_export)
+                     print(3)
+                     3
+                   }
+
+# IMPORTANT Shut it down
+stopCluster(myCluster)
+print(test_mp)
+```
+
+### With the data
+```{r Using the data}
+numCores <- detectCores() 
+myCluster <- makeCluster(numCores, type = "PSOCK") 
+registerDoParallel(myCluster)
+clusterExport(myCluster, "df")
+tmp <- clusterEvalQ(myCluster, 
+             { sink(paste0("../logs/log.toy.", sys.parent(), ".", Sys.getpid(),".txt"));
+               library(tidyverse); 
+               library(logging)})
+on.exit(stopCluster(myCluster))
+
+mycombinefunc <- function(a,b){rbind(a, b)}
+
+model_df <- foreach(yname = y_type,
+                    .combine = "mycombinefunc") %dopar% {
+                      # ALL THIS WIL HAPPEN ON ONE PROCESSOR
+                      f <- as.formula(sprintf("truth ~ %s", yname))
+                      model <- lm(f, df)
+                      logging::loginfo(sprintf("Forumula is truth = %.2f(%s + %.2f)", model$coefficients[2], yname, model$coefficients[1]))
+                      message(sprintf("Forumula is truth = %.2f(%s + %.2f)", model$coefficients[2], yname, model$coefficients[1]))
+                      # Export the results
+                      e <- data.frame(sensor = yname,
+                                      "(Intercept)" = model$coefficients[1],
+                                      "val" = model$coefficients[2],
+                                      row.names = NULL)
+                      e
+                    }
+stopCluster(myCluster)
+print(model_df)
+```
+
+## Benchmark them against each other
+```{r Benchmark}
+# for loop
+long_process <- function(df, y_type, quiet=T) {
+  for (yname in y_type) {
+    f <- as.formula(sprintf("truth ~ %s", yname))
+    model <- lm(f, df)
+    intercept <- model$coefficients[1]
+    slope <- model$coefficients[2]
+    if (quiet == F) {
+    message(sprintf("Forumula is %s = %.2f.x + %.2f", yname, slope, intercept))
+    }
+  }
+}
+
+# dplyr process
+dplyr_process <- function(df, y_type, quiet=T) {
+  a <- df %>% 
+    gather(sensor, val, y_type) %>%
+    group_by(sensor) %>% 
+    nest() %>% 
+    mutate(model = map(data, ~lm(truth ~ val, data = .x) %>% 
+                         tidy)) %>% 
+    unnest(model) %>%
+    select(sensor, term, estimate) %>%
+    spread(term, estimate)
+  if (quiet == F) {
+  a
+  }
+}
+
+# parallel process
+numCores <- detectCores() 
+myCluster <- makeCluster(numCores, type = "PSOCK") 
+registerDoParallel(myCluster)
+clusterExport(myCluster, "df")
+tmp <- clusterEvalQ(myCluster, 
+             { sink(paste0("../logs/log.bm.", sys.parent(), ".", Sys.getpid(),".txt"));
+               library(tidyverse); 
+               library(logging)})
+on.exit(stopCluster(myCluster))
+
+p_process <- function(y_type, quiet=T) {
+  mycombinefunc <- function(a,b){rbind(a, b)}
+  model_df <- foreach(yname = y_type,
+                      .combine = "mycombinefunc") %dopar% {
+                      model <- lm(as.formula(sprintf("truth ~ %s", yname)), df)
+                      e <- data.frame(sensor = yname,
+                                      "(Intercept)" = model$coefficients[1],
+                                      "val" = model$coefficients[2])
+                      e
+                      }
+  model_df
+}
+
+# Benchmark
+mbm <- microbenchmark("Loop" = long_process(df, y_type), 
+                      "DPLYR" = dplyr_process(df, y_type),
+                      "PARALLEL" = p_process(y_type), 
+                      times = 5)
+stopCluster(myCluster)
+print(mbm)
+```
+
+## Benchmark Multiple Sensors
+```{r test multiple}
+# Parellel with bigger data
+numCores <- detectCores() 
+myCluster <- makeCluster(numCores, type = "PSOCK") 
+registerDoParallel(myCluster)
+clusterExport(myCluster, "df_n")
+tmp <- clusterEvalQ(myCluster, 
+             { sink(paste0("../logs/log.bm.", sys.parent(), ".", Sys.getpid(),".txt"));
+               library(tidyverse); 
+               library(logging)})
+on.exit(stopCluster(myCluster))
+
+p_process <- function(y_type, quiet=T) {
+  mycombinefunc <- function(a,b){rbind(a, b)}
+  model_df <- foreach(yname = y_type,
+                      .combine = "mycombinefunc") %dopar% {
+                      model <- lm(as.formula(sprintf("truth ~ %s", yname)), df_n)
+                      e <- data.frame(sensor = yname,
+                                      "(Intercept)" = model$coefficients[1],
+                                      "val" = model$coefficients[2])
+                      e
+                      }
+  model_df
+}
+
+# Benchmark
+mbm <- microbenchmark("Loop" = long_process(df_n, sensor_name), 
+                      "DPLYR" = dplyr_process(df_n, sensor_name),
+                      "PARALLEL" = p_process(sensor_name), 
+                      times = 5)
+stopCluster(myCluster)
+print(mbm)
+```
+
+
+# Rolling fit with tidyquant - Serial and Parallel
+
+Sometimes the drift and bias in a sensor isn't a simple constant value but a value that changes over time.
+
+This is where rolling fits come in.
+
+A rolling fit 
+
+* takes a small window of time
+* finds the fitting values and reports back
+* moves a step along and repeats the process until it gets to the end of the line
+
+This section uses Tidyquant to do this process
+
+```{r stackoverflow question}
+my_lm_function <- function(df, yname="y_bias") { 
+  f <- as.formula(sprintf("truth ~ %s", yname))
+  model <- lm(f, df)
+  c(model$coefficients[2], model$coefficients[1])
+}
+  
+a <- df
+for (yname in y_type) {
+  a <- a %>% 
+    tq_mutate(mutate_fun = rollapply,
+              width      = 24*5,
+              by.column  = FALSE,
+              FUN        = my_lm_function,
+              # You need to name the new columns coming out
+              col_rename = gsub("$", sprintf(".%s", yname), t_name), 
+              yname = yname,
+              align = 'right', 
+              fill = NA
+      )
+  }
+a
+
+a %>%
+  gather(slope, sval, gsub("^", "slope.", y_type)) %>%
+  ggplot(aes(x = date, y = sval, color = slope)) +
+  geom_line() +
+  xlab(NULL) +
+  ylab("Slope") +
+  labs(title = "Time series plot") 
+  
+a %>%
+  gather(intercept, ival, gsub("^", "intercept.", y_type)) %>%
+  ggplot(aes(x = date, y = ival, color = intercept)) +
+  geom_line() +
+  xlab(NULL) +
+  ylab("Intercept") +
+  labs(title = "Time series plot")
+```
+
+
+## Benchmark
+```{r}
+# For loop process
+tq_process <- function(df, y_type, window_size = 7 * 24) {
+  a <- df
+  for (yname in y_type) {
+    a <- a %>% 
+      tq_mutate(mutate_fun = rollapply,
+                width      = window_size,
+                by.column  = FALSE,
+                FUN        = my_lm_function,
+                col_rename = gsub("$", sprintf(".%s", yname), t_name), 
+                yname = yname,
+                align = 'right', 
+                fill = NA
+        )
+    }
+  a
+}
+
+# Parallel process
+ptq_process <- function(y_type, window_size = 7 * 24) {
+  my_lm_function <- function(df, yname="y_bias") { 
+    f <- as.formula(sprintf("truth ~ %s", yname))
+    model <- lm(f, df)
+    c(model$coefficients[2], model$coefficients[1])
+  }
+
+  # Function to combine the outputs 
+  mycombinefunc <-  function(a,b){merge(a, b)}
+  
+  # New column names
+  t_name <- c("slope", "intercept")
+  
+  # Run the loop over multiple cores
+  e <- foreach(yname = y_type, 
+               .combine = "mycombinefunc") %dopar% {
+    df %>% 
+      tq_mutate(mutate_fun = rollapply,
+                width      = window_size,
+                by.column  = FALSE,
+                FUN        = my_lm_function,
+                col_rename = gsub("$", sprintf(".%s", yname), t_name), 
+                yname = yname
+      )
+  }
+  e
+}
+
+# Benchmark
+numCores <- detectCores() 
+myCluster <- makeCluster(numCores, type = "PSOCK") 
+registerDoParallel(myCluster)
+clusterExport(myCluster, "df")
+tmp <- clusterEvalQ(myCluster, 
+             { sink(paste0("../logs/log.bm.", sys.parent(), ".", Sys.getpid(),".txt"));
+               library(tidyverse); 
+               library(logging);
+               library(tidyquant)})
+on.exit(stopCluster(myCluster))
+
+mbm <- microbenchmark("FOR LOOP" = tq_process(df, y_type),
+                      "PARALLEL" = ptq_process(y_type), 
+                      times = 5)
+stopCluster(myCluster)
+print(mbm)
+```
+
+## Benchmark Multiple
+```{r}
+# Parallel with big data
+numCores <- 20 
+myCluster <- makeCluster(numCores, type = "PSOCK") 
+registerDoParallel(myCluster)
+clusterExport(myCluster, "df_n")
+tmp <- clusterEvalQ(myCluster, 
+             { sink(paste0("../logs/log.bm.", sys.parent(), ".", Sys.getpid(),".txt"));
+               library(tidyverse); 
+               library(logging);
+               library(tidyquant)})
+on.exit(stopCluster(myCluster))
+
+ptq_process <- function(y_type, window_size = 7 * 24) {
+  my_lm_function <- function(df, yname="y_bias") { 
+    f <- as.formula(sprintf("truth ~ %s", yname))
+    model <- lm(f, df)
+    c(model$coefficients[2], model$coefficients[1])
+  }
+  # Function to combine the outputs 
+  mycombinefunc <-  function(a,b){merge(a, b)}
+  # New column names
+  t_name <- c("slope", "intercept")
+  # Run the loop over multiple cores
+  e <- foreach(yname = y_type, 
+               .combine = "mycombinefunc") %dopar% {
+    df_n %>% 
+      tq_mutate(mutate_fun = rollapply,
+                width      = window_size,
+                by.column  = FALSE,
+                FUN        = my_lm_function,
+                col_rename = gsub("$", sprintf(".%s", yname), t_name), 
+                yname = yname
+      )
+  }
+  e
+}
+
+
+mbm <- microbenchmark("FOR LOOP" = tq_process(df_n, sensor_name),
+                      "PARALLEL" = ptq_process(sensor_name), 
+                      times = 1)
+stopCluster(myCluster)
+print(mbm)
+```
+
+# THE END, THANK-YOU
