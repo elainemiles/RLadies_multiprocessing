@@ -1,5 +1,5 @@
 ---
-title: "Multiprocessing Demo"
+title: "0. Fully Demo"
 output: html_notebook
 ---
 
@@ -12,7 +12,6 @@ This is notebook to show how to:
 * How to fit a linear line
 * How to fit a linear line to multiple sensors using:
     * for loops
-    * dplyr and broom
     * foreach and parallel
 * How to do a rolling linear fit to multiple sensors
 
@@ -176,18 +175,6 @@ for (yname in y_type) {
 }
 ```
 
-## dplyr and broom
-```{r dplyr}
-df %>% 
-  gather(sensor, val, y_type) %>%
-  group_by(sensor) %>% 
-  nest() %>% 
-  mutate(model = map(data, ~lm(truth ~ val, data = .x) %>% 
-                       tidy)) %>% 
-  unnest(model) %>%
-  select(sensor, term, estimate) %>%
-  spread(term, estimate)
-```
 
 ## Using multiprocessing
 
@@ -248,7 +235,7 @@ print(test_mp)
 ### With the data
 ```{r Using the data}
 numCores <- detectCores() 
-myCluster <- makeCluster(numCores, type = "PSOCK") 
+myCluster <- makeCluster(numCores, type = "PSOCK", rscript_args = "--vanilla") 
 registerDoParallel(myCluster)
 clusterExport(myCluster, "df")
 tmp <- clusterEvalQ(myCluster, 
@@ -280,7 +267,7 @@ print(model_df)
 ## Benchmark them against each other
 ```{r Benchmark}
 # for loop
-long_process <- function(df, y_type, quiet=T) {
+loop_process <- function(df, y_type, quiet=T) {
   for (yname in y_type) {
     f <- as.formula(sprintf("truth ~ %s", yname))
     model <- lm(f, df)
@@ -292,25 +279,9 @@ long_process <- function(df, y_type, quiet=T) {
   }
 }
 
-# dplyr process
-dplyr_process <- function(df, y_type, quiet=T) {
-  a <- df %>% 
-    gather(sensor, val, y_type) %>%
-    group_by(sensor) %>% 
-    nest() %>% 
-    mutate(model = map(data, ~lm(truth ~ val, data = .x) %>% 
-                         tidy)) %>% 
-    unnest(model) %>%
-    select(sensor, term, estimate) %>%
-    spread(term, estimate)
-  if (quiet == F) {
-  a
-  }
-}
-
 # parallel process
 numCores <- detectCores() 
-myCluster <- makeCluster(numCores, type = "PSOCK") 
+myCluster <- makeCluster(numCores, type = "PSOCK", rscript_args = "--vanilla") 
 registerDoParallel(myCluster)
 clusterExport(myCluster, "df")
 tmp <- clusterEvalQ(myCluster, 
@@ -333,8 +304,7 @@ p_process <- function(y_type, quiet=T) {
 }
 
 # Benchmark
-mbm <- microbenchmark("Loop" = long_process(df, y_type), 
-                      "DPLYR" = dplyr_process(df, y_type),
+mbm <- microbenchmark("LOOP" = loop_process(df, y_type), 
                       "PARALLEL" = p_process(y_type), 
                       times = 5)
 stopCluster(myCluster)
@@ -345,7 +315,7 @@ print(mbm)
 ```{r test multiple}
 # Parellel with bigger data
 numCores <- detectCores() 
-myCluster <- makeCluster(numCores, type = "PSOCK") 
+myCluster <- makeCluster(numCores, type = "PSOCK", rscript_args = "--vanilla") 
 registerDoParallel(myCluster)
 clusterExport(myCluster, "df_n")
 tmp <- clusterEvalQ(myCluster, 
@@ -368,8 +338,7 @@ p_process <- function(y_type, quiet=T) {
 }
 
 # Benchmark
-mbm <- microbenchmark("Loop" = long_process(df_n, sensor_name), 
-                      "DPLYR" = dplyr_process(df_n, sensor_name),
+mbm <- microbenchmark("Loop" = loop_process(df_n, sensor_name), 
                       "PARALLEL" = p_process(sensor_name), 
                       times = 5)
 stopCluster(myCluster)
@@ -483,7 +452,7 @@ ptq_process <- function(y_type, window_size = 7 * 24) {
 
 # Benchmark
 numCores <- detectCores() 
-myCluster <- makeCluster(numCores, type = "PSOCK") 
+myCluster <- makeCluster(numCores, type = "PSOCK", rscript_args = "--vanilla") 
 registerDoParallel(myCluster)
 clusterExport(myCluster, "df")
 tmp <- clusterEvalQ(myCluster, 
@@ -504,7 +473,7 @@ print(mbm)
 ```{r}
 # Parallel with big data
 numCores <- 20 
-myCluster <- makeCluster(numCores, type = "PSOCK") 
+myCluster <- makeCluster(numCores, type = "PSOCK", rscript_args = "--vanilla") 
 registerDoParallel(myCluster)
 clusterExport(myCluster, "df_n")
 tmp <- clusterEvalQ(myCluster, 

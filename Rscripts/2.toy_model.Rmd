@@ -1,0 +1,130 @@
+---
+title: "2. Toy model"
+output: html_notebook
+---
+
+# Aim
+
+This is notebook to show how to:
+
+* How to run code many times using:
+    * for loops
+    * foreach and parallel
+
+# For loop
+```{r for loop}
+yseq <- seq(5)
+x <- 0
+for (y in yseq) {
+  Sys.sleep(2)
+  x <- x + 3
+  logging::loginfo(sprintf("Working on sequential loop %d, x = %d", y, x))
+}
+
+logging::loginfo(x)
+```
+
+
+# Using multiple processors
+
+When you are using multiple processors you need to do a bit of setup.
+
+* How many processors/cores do you have
+* What kind of process will you run
+* Make a cluster
+* Register them
+* What variables should all clusters know about?
+* Where should error messages go? What libraries should be loaded?
+* What happens when you close R?
+* Do the work!
+* Shut it down
+
+```{r}
+# Value to process
+yseq <- seq(5)
+x <- 0
+
+# Get the number of cores available
+numCores <- detectCores() 
+
+# What kind of process?
+# (PSOCK and FORK (not available on windows!) are other options)
+sock <- "PSOCK" 
+
+# Make a cluser and register it
+myCluster <- makeCluster(numCores, type = sock, rscript_args = "--vanilla")
+registerDoParallel(myCluster)
+
+# What variables should each cluster know about?
+clusterExport(myCluster, "x")
+
+# Where do my errors go?  What do I want to setup?
+tmp <- clusterEvalQ(myCluster, 
+                    {sink(paste0("../logs/log.toy.", sys.parent(), ".", Sys.getpid(),".txt"));
+                     library(tidyverse)})
+
+# What to do if program stopes
+on.exit(stopCluster(myCluster))
+
+# How to combine all the end results
+mycombinefunc <- function(a,b){a + b}
+
+# Here is the for loop in ||
+new_x <- foreach(y = yseq,
+                 .combine = "mycombinefunc") %dopar% {
+                    Sys.sleep(2)
+                    x <- x + 3
+                    logging::loginfo(sprintf("Working on || loop %d, x = %d", y, x))
+                    x
+                  }
+
+logging::loginfo(new_x)
+
+# IMPORTANT Shut it down
+stopCluster(myCluster)
+```
+
+# Benchmark them against each other
+```{r Benchmark}
+# for loop
+loop_process <- function() {
+  yseq <- seq(5)
+  x <- 0
+  for (y in yseq) {
+    Sys.sleep(2)
+    x <- x + 3
+    logging::loginfo(sprintf("Working on sequential loop %d, x = %d", y, x))
+  }
+  logging::loginfo(x)
+}
+
+# Value to process
+p_process <- function() {
+  yseq <- seq(5)
+  x <- 0
+  numCores <- length(yseq) 
+  sock <- "PSOCK" 
+  myCluster <- makeCluster(numCores, type = sock, rscript_args = "--vanilla")
+  registerDoParallel(myCluster)
+  mycombinefunc <- function(a,b){a + b}
+  # Note that the packages, exports and sink are defined in the foreach function
+  new_x <- foreach(y = yseq,
+                   .combine = "mycombinefunc",
+                   .packages = c("tidyverse")) %dopar% {
+                       sink()
+                       sink(paste0("../logs/log.toy.", sys.parent(), ".", Sys.getpid(),".txt"))
+                       Sys.sleep(2)
+                       x <- x + 3
+                       logging::loginfo(sprintf("Working on || loop %d, x = %d", y, x))
+                       x
+                     }
+  logging::loginfo(new_x)
+  stopCluster(myCluster)
+}
+
+# Benchmark 
+mbm <- microbenchmark("LOOP" = loop_process(), 
+                      "PARALLEL" = p_process(), 
+                      times = 5)
+print(mbm)
+```

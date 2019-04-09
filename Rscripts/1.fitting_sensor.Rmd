@@ -1,0 +1,149 @@
+---
+title: "1. Fitting a sensor"
+output: html_notebook
+---
+
+# Aim
+
+This is notebook to show how to:
+
+* Make some demo sensor data with bias and sensitivity drift
+* How to make some simple plots of this data
+* How to fit a linear line
+
+# Create the data
+
+In this demo we will be looking at a sensor that is experiencing different kinds of errors.
+
+A sensor fresh out of the box, or over time, can start to misbehave.
+
+* Bias - Sensor is constantly reading higher or lower than it should be
+* Sensitivity - Sensor over or under-reads a value
+
+In this demo we are going to construct a simple data-frame `df` that has the following columns
+
+* `date` - Date an observation occurs and is measured by a sensor
+* `truth` - The truth
+* `y_bias` - Reading from a sensor with a nice simple bias issue
+* `y_sensitivity ` - Reading from a sensor with a nice simple sensitivity issue
+* `y_both` - Reading from a sensor with a nice simple bias and sensitivity issue
+* `y_vary` - Reading from a sensor with a nice Simple bias but complex sensitivity issue (gets more sensitive over time)
+
+```{r Make Data, fig.height=8, fig.width=16}
+make_data <- function(n=100) {
+  t <- seq(n)
+  d <- ISOdate(2018,1,1) + hours(t)
+  truth <- sin(t * 2 * pi / 24) # 1 signal per day
+  m <- 3
+  c <- 2
+  y_bias <- truth + c # Nice simple bias : truth = y_bias - 2
+  y_sensitivity <- m * truth # Nice simple sensitivity  : truth = y_bias / 3
+  y_both <- m * truth + c # Nice simple bias and sensitivity  : truth = (y_bias - 2) / 3
+  y_vary <- t/24. * truth + c # Simple bias but sensitivity changing over time  : truth = (y_bias - 2) * 24 / t
+  df <- data.frame("date" = d,
+                   "hour" = t, 
+                   "truth" = truth, 
+                   "y_bias" = y_bias, 
+                   "y_sensitivity" = y_sensitivity, 
+                   "y_both" = y_both,
+                   "y_vary" = y_vary)
+  df
+}
+
+
+df <- make_data(n = 1000)
+y_type <- c("y_bias", "y_sensitivity", "y_both", "y_vary")
+t_name <- c("slope", "intercept")
+
+df %>% 
+  ggplot(aes(x = date, y = truth)) +
+  geom_line() +
+  xlab(NULL) +
+  ylab("Signal (units)") +
+  labs(title = "Observed Truth")
+```
+
+## Plot the data
+```{r Plot Data, fig.height=8, fig.width=8}
+df %>% 
+  gather(s, val, y_bias, y_sensitivity, y_both, y_vary) %>%
+  ggplot(aes(x = date, y = val, color = s)) +
+  geom_line() +
+  geom_line(aes(x = date, y = truth), color = "black", linetype = 3) +
+  facet_grid(s ~ ., scales = "free") +
+  xlab(NULL) +
+  ylab("Signal (units)") +
+  labs(title = "Time series plot") +
+  theme(legend.position = "none")
+
+df %>% 
+  gather(s, val, y_bias, y_sensitivity, y_both, y_vary) %>%
+  ggplot(aes(x = truth, y = val, color = s)) +
+  geom_point() +
+  stat_smooth(method = "lm", col = "red") +
+  facet_wrap(s ~ ., scales = "free") + 
+  geom_abline() +
+  xlab("Truth") +
+  ylab("Signal (units)") +
+  labs(title = "Scatter plot") +
+  theme(legend.position = "none")
+```
+
+# How to find the m and c value when fitting data?
+
+* To create a model 
+    * Functional model.  In our case we are using a linear model so `lm`
+    * A formula of the form `observation ~ sensor`
+    * Some data! `df`
+    
+* To explore the model
+    * `summary`
+    * `coef`
+    * `print`
+    
+```{r Linear Model Demo, fig.height=8, fig.width=8}
+# Make the model
+f <- as.formula("truth ~ y_bias")
+model <- lm(f, df)
+
+# Explore the model
+summary(model)
+coef(model)
+print(model)
+
+# Use the model
+intercept <- model$coefficients[1]
+slope <- model$coefficients[2]
+
+result <- sprintf("Formula is truth = y_bias * %.2f + %.2f", slope, intercept)
+print(result)
+# Recall
+# y_bias = truth + 2
+# So
+# truth = y_bias - 2
+
+df %>% 
+  mutate(new_truth = y_bias * slope + intercept) %>%
+  gather(s, val, y_bias, new_truth) %>%
+  ggplot(aes(x = truth, y = val, color = s)) +
+  geom_point(size = 8) +
+  stat_smooth(method = "lm") +
+  geom_abline() +
+  coord_equal() +
+  xlab("Truth") +
+  ylab("Signal (units)") +
+  xlim(-3 , 3) + ylim(-3 , 3)
+```
+
+# How to run on many sensors?
+
+## For loop
+```{r for loop}
+for (yname in y_type) {
+  f <- as.formula(sprintf("truth ~ %s", yname))
+  model <- lm(f, df)
+  intercept <- model$coefficients[1]
+  slope <- model$coefficients[2]
+  message(sprintf("Formula is truth = %.2f(%s + %.2f)", slope, yname, intercept))
+}
+```

@@ -14,7 +14,6 @@ packages <- c("tidyverse",
               "lubridate", 
               "microbenchmark",
               "logging",
-              "broom", 
               "zoo", 
               "tidyquant", 
               "foreach",
@@ -50,10 +49,8 @@ logging::basicConfig()
 # Setup directory spaces
 logging::loginfo("Creating directories:")
 base_dir <- getwd()
-data_dir <- file.path(base_dir, "data")
-fig_dir <- file.path(base_dir, "figs")
 log_dir <- file.path(base_dir, "logs")
-setup_dirs <- c(base_dir, data_dir, fig_dir, log_dir)
+setup_dirs <- c(base_dir, log_dir)
 purrr::walk(setup_dirs, dir.create, showWarnings = F)
 logging::loginfo(paste(setup_dirs, collapse = ', ' ))
 

@@ -1,0 +1,242 @@
+---
+title: "4. Advanced demo"
+output: html_notebook
+---
+
+# Aim
+
+This is notebook to show how to:
+
+* How to do a rolling linear fit to multiple sensors
+
+# Create the data
+
+In this demo we will be looking at a sensor that is experiencing different kinds of errors.
+
+A sensor fresh out of the box, or over time, can start to misbehave.
+
+* Bias - Sensor is constantly reading higher or lower than it should be
+* Sensitivity - Sensor over or under-reads a value
+
+In this demo we are going to construct a simple data-frame `df` that has the following columns
+
+* `date` - Date an observation occurs and is measured by a sensor
+* `truth` - The truth
+* `y_bias` - Reading from a sensor with a nice simple bias issue
+* `y_sensitivity ` - Reading from a sensor with a nice simple sensitivity issue
+* `y_both` - Reading from a sensor with a nice simple bias and sensitivity issue
+* `y_vary` - Reading from a sensor with a nice Simple bias but complex sensitivity issue (gets more sensitive over time)
+
+```{r Make Data, fig.height=8, fig.width=16}
+make_data <- function(n=100) {
+  t <- seq(n)
+  d <- ISOdate(2018,1,1) + hours(t)
+  truth <- sin(t * 2 * pi / 24) # 1 signal per day
+  m <- 3
+  c <- 2
+  y_bias <- truth + c # Nice simple bias : truth = y_bias - 2
+  y_sensitivity <- m * truth # Nice simple sensitivity  : truth = y_bias / 3
+  y_both <- m * truth + c # Nice simple bias and sensitivity  : truth = (y_bias - 2) / 3
+  y_vary <- t/24. * truth + c # Simple bias but sensitivity changing over time  : truth = (y_bias - 2) * 24 / t
+  df <- data.frame("date" = d,
+                   "hour" = t, 
+                   "truth" = truth, 
+                   "y_bias" = y_bias, 
+                   "y_sensitivity" = y_sensitivity, 
+                   "y_both" = y_both,
+                   "y_vary" = y_vary)
+  df
+}
+
+df <- make_data(n = 1000)
+y_type <- c("y_bias", "y_sensitivity", "y_both", "y_vary")
+t_name <- c("slope", "intercept")
+```
+
+## Plot the data
+```{r Plot Data, fig.height=8, fig.width=8}
+df %>% 
+  gather(s, val, y_bias, y_sensitivity, y_both, y_vary) %>%
+  ggplot(aes(x = date, y = val, color = s)) +
+  geom_line() +
+  geom_line(aes(x = date, y = truth), color = "black", linetype = 3) +
+  facet_grid(s ~ ., scales = "free") +
+  xlab(NULL) +
+  ylab("Signal (units)") +
+  labs(title = "Time series plot") +
+  theme(legend.position = "none")
+
+df %>% 
+  gather(s, val, y_bias, y_sensitivity, y_both, y_vary) %>%
+  ggplot(aes(x = truth, y = val, color = s)) +
+  geom_point() +
+  stat_smooth(method = "lm", col = "red") +
+  facet_wrap(s ~ ., scales = "free") + 
+  geom_abline() +
+  xlab("Truth") +
+  ylab("Signal (units)") +
+  labs(title = "Scatter plot") +
+  theme(legend.position = "none")
+```
+
+# Rolling fit with tidyquant - Serial and Parallel
+
+Sometimes the drift and bias in a sensor isn't a simple constant value but a value that changes over time.
+
+This is where rolling fits come in.
+
+A rolling fit 
+
+* takes a small window of time
+* finds the fitting values and reports back
+* moves a step along and repeats the process until it gets to the end of the line
+
+This section uses Tidyquant to do this process
+
+```{r stackoverflow question}
+my_lm_function <- function(df, yname="y_bias") { 
+  f <- as.formula(sprintf("truth ~ %s", yname))
+  model <- lm(f, df)
+  c(model$coefficients[2], model$coefficients[1])
+}
+  
+a <- df
+for (yname in y_type) {
+  a <- a %>% 
+    tq_mutate(mutate_fun = rollapply,
+              width      = 24*5,
+              by.column  = FALSE,
+              FUN        = my_lm_function,
+              # You need to name the new columns coming out
+              col_rename = gsub("$", sprintf(".%s", yname), t_name), 
+              yname = yname,
+              align = 'right', 
+              fill = NA
+      )
+  }
+
+a %>%
+  gather(slope, sval, gsub("^", "slope.", y_type)) %>%
+  ggplot(aes(x = date, y = sval, color = slope)) +
+  geom_line() +
+  xlab(NULL) +
+  ylab("Slope") +
+  labs(title = "Time series plot") 
+  
+a %>%
+  gather(intercept, ival, gsub("^", "intercept.", y_type)) %>%
+  ggplot(aes(x = date, y = ival, color = intercept)) +
+  geom_line() +
+  xlab(NULL) +
+  ylab("Intercept") +
+  labs(title = "Time series plot")
+```
+## Honest benchmark
+```{r}
+# For loop process
+tq_process <- function(df, y_type, window_size = 7 * 24) {
+  a <- df
+  for (yname in y_type) {
+    a <- a %>% 
+      tq_mutate(mutate_fun = rollapply,
+                width      = window_size,
+                by.column  = FALSE,
+                FUN        = my_lm_function,
+                col_rename = gsub("$", sprintf(".%s", yname), t_name), 
+                yname = yname,
+                align = 'right', 
+                fill = NA
+        )
+    }
+  a
+}
+
+# Parallel process
+p_process <- function(df, y_type, window_size = 7 * 24, numCores = 4) {
+  myCluster <- makeCluster(numCores, type = "PSOCK", rscript_args = "--vanilla") 
+  registerDoParallel(myCluster)
+
+  my_lm_function <- function(df, yname="y_bias") { 
+    f <- as.formula(sprintf("truth ~ %s", yname))
+    model <- lm(f, df)
+    c(model$coefficients[2], model$coefficients[1])
+  }
+
+  # Function to combine the outputs 
+  mycombinefunc <-  function(a,b){merge(a, b)}
+  
+  # New column names
+  t_name <- c("slope", "intercept")
+  
+  # Run the loop over multiple cores
+  e <- foreach(yname = y_type, 
+               .combine = "mycombinefunc",
+               .packages = c("tidyverse", "tidyquant")) %dopar% {
+    df %>% 
+      tidyquant::tq_mutate(mutate_fun = rollapply,
+                width      = window_size,
+                by.column  = FALSE,
+                FUN        = my_lm_function,
+                col_rename = gsub("$", sprintf(".%s", yname), t_name), 
+                yname = yname
+      )
+  }
+  stopCluster(myCluster)
+  e
+}
+
+# Benchmark
+mbm <- microbenchmark("LOOP" = tq_process(df, y_type),
+                      "PARALLEL" = p_process(df, y_type), 
+                      times = 3)
+print(mbm)
+```
+
+## Remove overhead benchmark
+```{r}
+# Parallel process
+ptq_process <- function(y_type, window_size = 7 * 24) {
+  my_lm_function <- function(df, yname="y_bias") { 
+    f <- as.formula(sprintf("truth ~ %s", yname))
+    model <- lm(f, df)
+    c(model$coefficients[2], model$coefficients[1])
+  }
+
+  # Function to combine the outputs 
+  mycombinefunc <-  function(a,b){merge(a, b)}
+  
+  # New column names
+  t_name <- c("slope", "intercept")
+  
+  # Run the loop over multiple cores
+  e <- foreach(yname = y_type, 
+               .combine = "mycombinefunc") %dopar% {
+    df %>% 
+      tq_mutate(mutate_fun = rollapply,
+                width      = window_size,
+                by.column  = FALSE,
+                FUN        = my_lm_function,
+                col_rename = gsub("$", sprintf(".%s", yname), t_name), 
+                yname = yname
+      )
+  }
+  e
+}
+
+# Benchmark
+myCluster <- makeCluster(4, type = "PSOCK", rscript_args = "--vanilla") 
+registerDoParallel(myCluster)
+clusterExport(myCluster, "df")
+tmp <- clusterEvalQ(myCluster, 
+             { sink(paste0("../logs/log.bm.", sys.parent(), ".", Sys.getpid(),".txt"));
+               library(tidyverse); 
+               library(logging);
+               library(tidyquant)})
+on.exit(stopCluster(myCluster))
+
+mbm <- microbenchmark("FOR LOOP" = tq_process(df, y_type),
+                      "PARALLEL" = ptq_process(y_type), 
+                      times = 3)
+stopCluster(myCluster)
+print(mbm)
+```

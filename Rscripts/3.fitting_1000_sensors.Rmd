@@ -1,0 +1,168 @@
+---
+title: "Multiprocessing Demo"
+output: html_notebook
+---
+
+# Aim
+
+This is notebook to show how to:
+
+* Make some demo sensor data with bias and sensitivity drift
+* How to fit a linear line to multiple sensors using:
+    * for loops
+    * foreach and parallel
+
+# Create the data
+
+In this demo we will be looking at a sensor that is experiencing different kinds of errors.
+
+A sensor fresh out of the box, or over time, can start to misbehave.
+
+* Bias - Sensor is constantly reading higher or lower than it should be
+* Sensitivity - Sensor over or under-reads a value
+
+In this demo we are going to construct a simple data-frame `df` that has the following columns
+
+* `date` - Date an observation occurs and is measured by a sensor
+* `truth` - The truth
+* `y_bias` - Reading from a sensor with a nice simple bias issue
+* `y_sensitivity ` - Reading from a sensor with a nice simple sensitivity issue
+* `y_both` - Reading from a sensor with a nice simple bias and sensitivity issue
+* `y_vary` - Reading from a sensor with a nice Simple bias but complex sensitivity issue (gets more sensitive over time)
+
+```{r Make Data, fig.height=8, fig.width=16}
+make_ndata <- function(n=100, num=1000) {
+  t <- seq(n)
+  d <- ISOdate(2018,1,1) + hours(t)
+  truth <- sin(t * 2 * pi / 24) # 1 signal per day
+  df <- data.frame("date" = d,
+                   "hour" = t, 
+                   "truth" = truth)
+  set.seed(100)
+  m100 <- rnorm(num)
+  c100 <- rnorm(num)
+  for (i in seq(num)) {
+    cname <- sprintf("SENSOR.%d", i)
+    df <- df %>%
+      mutate(!!(cname) := m100[i] * truth + c100[i] )
+  }
+  df
+}
+
+num <- 10
+df_n <- make_ndata(n = 1000, num = num)
+sensor_name <- gsub("^", "SENSOR.", seq(num))
+```
+
+# How to run on many sensors?
+## For loop
+```{r for loop}
+l <- data.frame("sensor"=character(), "Slope"=double(), "Intercept"=double())
+for (sensor in sensor_name) {
+  f <- as.formula(sprintf("truth ~ %s", sensor))
+  model <- lm(f, df_n)
+  intercept <- model$coefficients[1]
+  slope <- model$coefficients[2]
+  logging::loginfo(sprintf("Formula is truth = %.2f(%s + %.2f)", slope, sensor, intercept))
+  e <- data.frame("Sensor" = sensor,
+                "Slope" = model$coefficients[2],
+                "Intercept" = model$coefficients[1],
+                row.names = NULL)
+  l <- rbind(l, e)
+}
+l
+```
+
+## Using multiple processors
+```{r Using the data}
+numCores <- detectCores() 
+myCluster <- makeCluster(numCores, type = "PSOCK") 
+registerDoParallel(myCluster)
+on.exit(stopCluster(myCluster))
+mycombinefunc <- function(a,b){rbind(a, b)}
+sink()
+sink(paste0("../logs/log.sensors.", sys.parent(), ".", Sys.getpid(),".txt"))
+model_df <- foreach(sensor = sensor_name,
+                    .combine = "mycombinefunc") %dopar% {
+                      # ALL THIS WIL HAPPEN ON ONE PROCESSOR
+                      f <- as.formula(sprintf("truth ~ %s", sensor))
+                      print(f)
+                      model <- lm(f, df_n)
+                      logging::loginfo(sprintf("Forumula is truth = %.2f(%s + %.2f)", model$coefficients[2], sensor, model$coefficients[1]))
+                      # Export the results
+                      e <- data.frame("Sensor" = sensor,
+                                      "Slope" = model$coefficients[2],
+                                      "Intercept" = model$coefficients[1],
+                                      row.names = NULL)
+                      e
+                    }
+stopCluster(myCluster)
+model_df
+```
+
+## Benchmark them against each other
+```{r Benchmark}
+# for loop
+loop_process <- function(df_n, sensor_name) {
+  l <- data.frame("sensor"=character(), "Slope"=double(), "Intercept"=double())
+  for (sensor in sensor_name) {
+    f <- as.formula(sprintf("truth ~ %s", sensor))
+    model <- lm(f, df_n)
+    intercept <- model$coefficients[1]
+    slope <- model$coefficients[2]
+    logging::loginfo(sprintf("Formula is truth = %.2f(%s + %.2f)", slope, sensor, intercept))
+    e <- data.frame("Sensor" = sensor,
+                  "Slope" = model$coefficients[2],
+                  "Intercept" = model$coefficients[1],
+                  row.names = NULL)
+    l <- rbind(l, e)
+  }
+  l
+}
+
+# parallel process
+p_process <- function(df_n, sensor_name, numCores = 8) {
+  myCluster <- makeCluster(numCores, type = "PSOCK", rscript_args = "--vanilla") 
+  registerDoParallel(myCluster)
+  mycombinefunc <- function(a,b){rbind(a, b)}
+  sink()
+  sink(paste0("../logs/log.1000.", sys.parent(), ".", Sys.getpid(),".txt"))
+  model_df <- foreach(sensor = sensor_name,
+                     .combine = "mycombinefunc") %dopar% {
+                      f <- as.formula(sprintf("truth ~ %s", sensor))
+                      model <- lm(f, df_n)
+                      logging::loginfo(sprintf("Formula is truth = %.2f(%s + %.2f)", model$coefficients[2], sensor, model$coefficients[1]))
+                      # Export the results
+                      e <- data.frame("Sensor" = sensor,
+                                      "Slope" = model$coefficients[2],
+                                      "Intercept" = model$coefficients[1],
+                                      row.names = NULL)
+                      e
+                      }
+  stopCluster(myCluster)
+  sink()
+  model_df
+}
+
+mbm <- microbenchmark("Loop" = loop_process(df_n, sensor_name), 
+                      "PARALLEL" = p_process(df_n, sensor_name), 
+                      times = 5)
+print(mbm)
+```
+
+## Benchmark Multiple Sensors
+```{r test multiple}
+num <- 1000
+df_big <- make_ndata(n = 1000, num = num)
+sensor_big <- gsub("^", "SENSOR.", seq(num))
+```
+
+```{r benchmark big data}
+mbm <- microbenchmark("LOOP" = loop_process(df_big, sensor_big), 
+                      "PARALLEL4" = p_process(df_big, sensor_big, numCores = 4), 
+                      "PARALLEL8" = p_process(df_big, sensor_big, numCores = 8), 
+                      "PARALLEL16" = p_process(df_big, sensor_big, numCores = 16),
+                      times = 2)
+print(mbm)
+```
+
