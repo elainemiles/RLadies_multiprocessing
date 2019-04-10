@@ -153,7 +153,9 @@ tq_process <- function(df, y_type, window_size = 7 * 24) {
 
 # Parallel process
 p_process <- function(df, y_type, window_size = 7 * 24, numCores = 4) {
-  myCluster <- makeCluster(numCores, type = "PSOCK", rscript_args = "--vanilla") 
+  myCluster <- makeCluster(numCores, 
+                           type = "PSOCK", 
+                           rscript_args = "--vanilla") 
   registerDoParallel(myCluster)
 
   my_lm_function <- function(df, yname="y_bias") { 

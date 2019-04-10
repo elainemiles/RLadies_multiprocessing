@@ -104,15 +104,16 @@ p_process <- function() {
   x <- 0
   numCores <- length(yseq) 
   sock <- "PSOCK" 
-  myCluster <- makeCluster(numCores, type = sock, rscript_args = "--vanilla")
+  myCluster <- makeCluster(length(yseq), 
+                           type = sock, 
+                           rscript_args = "--vanilla")
   registerDoParallel(myCluster)
   mycombinefunc <- function(a,b){a + b}
-  # Note that the packages, exports and sink are defined in the foreach function
+  clusterEvalQ(myCluster, sink(paste0("../logs/log.toy.", sys.parent(), ".", Sys.getpid(),".txt")))
+
+  # Note that the .packages, .exports can defined in the foreach function
   new_x <- foreach(y = yseq,
-                   .combine = "mycombinefunc",
-                   .packages = c("tidyverse")) %dopar% {
-                       sink()
-                       sink(paste0("../logs/log.toy.", sys.parent(), ".", Sys.getpid(),".txt"))
+                   .combine = "mycombinefunc") %dopar% {
                        Sys.sleep(2)
                        x <- x + 3
                        logging::loginfo(sprintf("Working on || loop %d, x = %d", y, x))
@@ -125,6 +126,6 @@ p_process <- function() {
 # Benchmark 
 mbm <- microbenchmark("LOOP" = loop_process(), 
                       "PARALLEL" = p_process(), 
-                      times = 5)
+                      times = 1)
 print(mbm)
 ```
