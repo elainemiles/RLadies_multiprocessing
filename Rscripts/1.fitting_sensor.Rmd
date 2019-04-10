@@ -33,9 +33,9 @@ In this demo we are going to construct a simple data-frame `df` that has the fol
 make_data <- function(n=100) {
   t <- seq(n)
   d <- ISOdate(2018,1,1) + hours(t)
-  truth <- sin(t * 2 * pi / 24) # 1 signal per day
-  m <- 3
-  c <- 2
+  truth <-sin(t * 2 * pi / 24) # 1 signal per day
+  m <- 3 # Sensitivity value - sensor reads 3 * more
+  c <- 2 # Bias - Signal offset by 2
   y_bias <- truth + c # Nice simple bias : truth = y_bias - 2
   y_sensitivity <- m * truth # Nice simple sensitivity  : truth = y_bias / 3
   y_both <- m * truth + c # Nice simple bias and sensitivity  : truth = (y_bias - 2) / 3
@@ -53,7 +53,6 @@ make_data <- function(n=100) {
 
 df <- make_data(n = 1000)
 y_type <- c("y_bias", "y_sensitivity", "y_both", "y_vary")
-t_name <- c("slope", "intercept")
 
 df %>% 
   ggplot(aes(x = date, y = truth)) +
