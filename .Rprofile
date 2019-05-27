@@ -1,4 +1,4 @@
-cat("Welcome to the multiprocessing demo project.\n")
+message("Welcome to the multiprocessing demo project.\n")
 
 # Load useful libraries
 check.packages <- function(pkg) {
@@ -21,9 +21,9 @@ packages <- c("tidyverse",
               "doParallel"
               )
 
-cat("Loading and installing required libraries.\n")
-cat(paste(packages, collapse = ', ' ))
-cat("\n")
+message("Loading and installing required libraries.\n")
+message(paste(packages, collapse = ', ' ))
+message("\n")
 check.packages(packages)
 
 # Options
